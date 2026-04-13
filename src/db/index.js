@@ -109,6 +109,22 @@ function createStore(options) {
             "  SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS total_closed,",
             "  SUM(CASE WHEN status = 'spam' THEN 1 ELSE 0 END) AS total_spam",
             "FROM leads"
+        ].join("\n")),
+        dashboardKpis: db.prepare([
+            "SELECT",
+            "  SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed,",
+            "  SUM(CASE WHEN status = 'spam' THEN 1 ELSE 0 END) AS spam,",
+            "  SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress,",
+            "  SUM(CASE WHEN status = 'new' AND date(created_at) = date('now') THEN 1 ELSE 0 END) AS new_today,",
+            "  SUM(CASE WHEN status = 'new' AND date(created_at) >= date('now', '-7 days') THEN 1 ELSE 0 END) AS new_this_week",
+            "FROM leads"
+        ].join("\n")),
+        sourceBreakdown: db.prepare([
+            "SELECT source_page AS source_channel, COUNT(*) AS total",
+            "FROM leads",
+            "WHERE source_page IS NOT NULL AND source_page != ''",
+            "GROUP BY source_page",
+            "ORDER BY total DESC"
         ].join("\n"))
     };
 
@@ -316,6 +332,25 @@ function createStore(options) {
         return getLeadById(leadId);
     }
 
+    function dashboardMetrics() {
+        const row = statements.dashboardKpis.get() || {};
+        const sources = statements.sourceBreakdown.all() || [];
+
+        return {
+            closed: Number(row.closed || 0),
+            spam: Number(row.spam || 0),
+            inProgress: Number(row.in_progress || 0),
+            newToday: Number(row.new_today || 0),
+            newThisWeek: Number(row.new_this_week || 0),
+            highPriorityOpen: 0,
+            overdueFollowUps: 0,
+            avgFirstResponseMinutes: null,
+            sourceBreakdown: sources.map(function (s) {
+                return { sourceChannel: s.source_channel, total: s.total };
+            })
+        };
+    }
+
     function close() {
         db.close();
     }
@@ -330,6 +365,7 @@ function createStore(options) {
         listLeads: listLeads,
         updateLeadById: updateLeadById,
         markLeadTelegramNotified: markLeadTelegramNotified,
+        dashboardMetrics: dashboardMetrics,
         close: close
     };
 }

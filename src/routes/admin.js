@@ -50,6 +50,10 @@ function createAdminRouter(options) {
 
     router.use(requireAdminAuth);
 
+    router.get("/dashboard", function (req, res) {
+        res.json(store.dashboardMetrics());
+    });
+
     router.get("/inbox", function (req, res) {
         const status = optionalEnum("status", req.query.status || "all", inboxStatuses) || "all";
         res.json(store.listLeads(status));
