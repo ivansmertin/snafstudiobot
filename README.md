@@ -1,18 +1,8 @@
 # snafstudio-backend
 
-Отдельный backend-репозиторий для `snafstudio.ru`: FAQ-чат без LLM, авто-создание lead с первого сообщения, inbox для `admin.html`, SQLite-хранилище и опциональные Telegram-уведомления.
+Standalone backend for `snafstudio.ru`: deterministic FAQ chat without LLM, auto-created leads from the first chat message, SQLite inbox for `admin.html`, and optional Telegram notifications.
 
-## Что делает сервис
-
-- Создает `sessionId` для чат-виджета.
-- На первом же сообщении пользователя автоматически создает lead в SQLite и показывает его в admin inbox.
-- Не ждет кнопку "Оставить заявку" и не ждет имя/контакт.
-- Если пользователь позже отправляет форму контакта, backend обновляет существующий lead по `sessionId`, а не создает новый.
-- Отдает короткие детерминированные ответы по `https://snafstudio.ru/data/content.json`.
-- Защищает admin API через GitHub allowlist и `httpOnly` cookie.
-- Может отправлять уведомления в Telegram, но полностью работает и без Telegram env-переменных.
-
-## Стек
+## Stack
 
 - Node.js 20+
 - Express
@@ -22,96 +12,112 @@
 - cors
 - dotenv
 - CommonJS
-- обычный JavaScript без TypeScript
+- plain JavaScript
 
-## Структура
+## API
 
-```text
-.
-├─ .env.example
-├─ package.json
-├─ README.md
-└─ src
-   ├─ app.js
-   ├─ config.js
-   ├─ server.js
-   ├─ db
-   │  └─ index.js
-   ├─ middleware
-   │  └─ require-admin-auth.js
-   ├─ routes
-   │  ├─ admin.js
-   │  ├─ chat.js
-   │  └─ health.js
-   ├─ services
-   │  ├─ admin-session-service.js
-   │  ├─ chat-responder.js
-   │  ├─ content-service.js
-   │  ├─ github-auth-service.js
-   │  ├─ lead-service.js
-   │  └─ telegram-service.js
-   └─ utils
-      ├─ errors.js
-      ├─ http.js
-      └─ validation.js
-```
-
-## Реализованные маршруты
-
-### Chat API
+### Chat
 
 - `POST /api/chat/session`
 - `POST /api/chat/message`
 - `POST /api/chat/lead`
 
-### Admin API
+### Admin
 
 - `POST /api/admin/auth/github`
 - `POST /api/admin/logout`
-- `GET /api/admin/inbox?status=new`
+- `GET /api/admin/inbox?status=new|in_progress|closed|spam|all`
 - `GET /api/admin/inbox/:id`
 - `PATCH /api/admin/inbox/:id`
 
-### Service API
+### Service
 
 - `GET /api/health`
 
-## Как работает lead flow
+## Performance Pass
 
-1. Фронтенд вызывает `POST /api/chat/session` и получает `sessionId`.
-2. На `POST /api/chat/message` backend:
-   - детерминированно генерирует reply,
-   - сразу создает lead, если это первое сообщение для `sessionId`,
-   - сохраняет `firstQuestion`,
-   - пишет в `transcript` события `system -> user -> bot`,
-   - выставляет статус `new`.
-3. Когда пользователь позже вызывает `POST /api/chat/lead`, backend:
-   - ищет lead по `sessionId`,
-   - обновляет `visitorName`, `contactType`, `contactValue`,
-   - при необходимости дополняет `firstQuestion`,
-   - не создает дубль благодаря уникальному `session_id` в таблице `leads`.
+This repo now includes a focused optimization pass with backward-compatible behavior for the existing site frontend.
 
-## Переменные окружения
+### Improvements
 
-Скопируйте `.env.example` в `.env`.
+- `POST /api/chat/message` now works with or without `sessionId`.
+- First chat message can create session + lead in one request.
+- The response from `POST /api/chat/message` now also includes `sessionId`.
+- Lead deduplication stays anchored on unique `session_id`.
+- Repeated lead form submits update the same lead instead of creating a new one.
+- `GET /api/admin/inbox` now returns compact list items without full `transcript`.
+- Full `transcript` is returned only by `GET /api/admin/inbox/:id`.
+- GitHub token validation uses a short in-memory cache keyed by token hash.
+- Content is loaded into memory and matcher indexes are built only on content refresh.
+- External requests use explicit timeouts.
+- Request timing logs now print method, path, status code, and duration.
 
-| Переменная | Обязательна | Назначение |
+### Compact inbox list payload
+
+`GET /api/admin/inbox` returns:
+
+- `id`
+- `createdAt`
+- `updatedAt`
+- `status`
+- `visitorName`
+- `contactType`
+- `contactValue`
+- `firstQuestion`
+- `sourcePage`
+- `matchType`
+
+`counts` remain unchanged.
+
+### Health endpoint
+
+`GET /api/health` keeps returning:
+
+```json
+{
+  "ok": true,
+  "content": {
+    "sourceUrl": "https://snafstudio.ru/data/content.json",
+    "lastLoadedAt": "2026-04-13T10:00:00.000Z",
+    "lastError": null
+  }
+}
+```
+
+## Lead Flow
+
+1. Frontend may call `POST /api/chat/session` first and receive `sessionId`.
+2. Frontend may also skip that step and call `POST /api/chat/message` directly.
+3. On the first chat message, backend creates or upserts:
+   - chat session
+   - lead row with status `new`
+   - `firstQuestion`
+   - transcript entries for system, user, and bot
+4. When `POST /api/chat/lead` is submitted later, backend updates the same lead by `sessionId`.
+
+There is always exactly one lead row per `sessionId`.
+
+## Env
+
+Copy `.env.example` to `.env`.
+
+| Variable | Required | Purpose |
 |---|---|---|
-| `PORT` | нет | Порт сервера |
-| `ALLOWED_ORIGINS` | да | Список origin через запятую для CORS |
-| `GITHUB_ADMIN_ALLOWLIST` | да | GitHub-логины админов через запятую |
-| `TELEGRAM_BOT_TOKEN` | нет | Токен Telegram-бота |
-| `TELEGRAM_CHAT_ID` | нет | Чат/канал для уведомлений |
-| `SESSION_SECRET` | да | Секрет для подписи admin cookie |
-| `CONTENT_SOURCE_URL` | нет | URL публичного JSON контента |
-| `SQLITE_PATH` | нет | Путь к SQLite-файлу |
-| `ADMIN_APP_URL` | нет | Ссылка на `admin.html`, добавляется в Telegram-сообщение |
-| `ADMIN_SESSION_TTL_HOURS` | нет | Время жизни admin cookie |
-| `CONTENT_REFRESH_MS` | нет | Интервал обновления `content.json` |
-| `COOKIE_SECURE` | да | `true` для HTTPS production |
-| `COOKIE_SAME_SITE` | да | `lax`, `strict` или `none` |
+| `PORT` | no | Server port |
+| `ALLOWED_ORIGINS` | yes | Comma-separated CORS origins |
+| `GITHUB_ADMIN_ALLOWLIST` | yes | Comma-separated allowed GitHub usernames |
+| `TELEGRAM_BOT_TOKEN` | no | Telegram bot token |
+| `TELEGRAM_CHAT_ID` | no | Telegram chat or channel id |
+| `SESSION_SECRET` | yes | Secret for admin session cookie signing |
+| `CONTENT_SOURCE_URL` | no | Source URL for public `content.json` |
+| `SQLITE_PATH` | no | SQLite database path |
+| `ADMIN_APP_URL` | no | Link to admin app, used in Telegram notification |
+| `ADMIN_SESSION_TTL_HOURS` | no | Admin cookie TTL |
+| `CONTENT_REFRESH_MS` | no | Content refresh interval |
+| `COOKIE_SECURE` | yes | Use `true` on HTTPS production |
+| `COOKIE_SAME_SITE` | yes | `lax`, `strict`, or `none` |
 
-## Как установить и запустить локально
+## Local Run
 
 ```bash
 cp .env.example .env
@@ -119,42 +125,22 @@ npm install
 npm run dev
 ```
 
-По умолчанию сервер поднимется на `http://localhost:3000`.
+Default local URL:
 
-Для локальной связки с сайтом:
+- `http://localhost:3000`
 
-- добавьте origin сайта и `admin.html` в `ALLOWED_ORIGINS`;
-- укажите в фронтенде `chat.apiBaseUrl`, например `http://localhost:3000`;
-- если admin работает с другого origin и cookie не проходит, используйте HTTPS и связку `COOKIE_SECURE=true` + `COOKIE_SAME_SITE=none`.
+## Deploy on VDS
 
-## SQLite-схема
+Basic flow:
 
-Таблицы:
+1. Copy the repo to the server, for example `/var/www/snafstudio-backend`.
+2. Install Node.js 20+.
+3. Create `.env`.
+4. Run `npm install`.
+5. Start with `pm2` or `systemd`.
+6. Put Nginx in front of it, for example on `https://api.snafstudio.ru`.
 
-- `chat_sessions`
-- `leads`
-
-`leads.session_id` помечен как `UNIQUE`, поэтому один `sessionId` всегда соответствует одной lead-заявке.
-
-В `transcript` хранится JSON-массив событий:
-
-- сообщения пользователя;
-- ответы бота;
-- системные события создания lead;
-- системные события отправки контактной формы.
-
-## Деплой на VDS
-
-Простой вариант:
-
-1. Скопируйте проект на сервер, например в `/var/www/snafstudio-backend`.
-2. Установите Node.js 20+.
-3. Создайте `.env`.
-4. Выполните `npm install`.
-5. Запустите приложение через `pm2` или `systemd`.
-6. Проксируйте backend через Nginx на отдельный домен или поддомен, например `https://api.snafstudio.ru`.
-
-### Пример запуска через PM2
+### PM2 example
 
 ```bash
 cd /var/www/snafstudio-backend
@@ -164,9 +150,9 @@ pm2 save
 pm2 startup
 ```
 
-### Пример systemd unit
+### systemd example
 
-Файл `/etc/systemd/system/snafstudio-backend.service`:
+File: `/etc/systemd/system/snafstudio-backend.service`
 
 ```ini
 [Unit]
@@ -185,7 +171,7 @@ Environment=NODE_ENV=production
 WantedBy=multi-user.target
 ```
 
-Команды:
+Commands:
 
 ```bash
 sudo systemctl daemon-reload
@@ -194,7 +180,7 @@ sudo systemctl start snafstudio-backend
 sudo systemctl status snafstudio-backend
 ```
 
-### Пример Nginx reverse proxy
+### Nginx reverse proxy example
 
 ```nginx
 server {
@@ -210,32 +196,27 @@ server {
 }
 ```
 
-После подключения HTTPS выставьте:
+If `admin.html` and backend are on different origins and cookies are sent with `credentials: "include"`, use:
 
 ```env
 COOKIE_SECURE=true
 COOKIE_SAME_SITE=none
 ```
 
-если `admin.html` и backend работают на разных origin и нужно, чтобы браузер отправлял cookie с `credentials: "include"`.
+## Site Integration
 
-## Интеграция с текущим сайтом
+The existing site frontend remains compatible.
 
-На сайте уже есть совместимый фронтенд:
+You need:
 
-- `js/chat-widget.js`
-- `js/admin.js`
+1. `window.SNAF_CONFIG.chat.apiBaseUrl = "https://api.snafstudio.ru"`
+2. Add both main site origin and admin origin to `ALLOWED_ORIGINS`
+3. Add your GitHub login to `GITHUB_ADMIN_ALLOWLIST`
+4. Optionally set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`
 
-Что нужно прописать:
+## Notes
 
-1. Указать `chat.apiBaseUrl` в `window.SNAF_CONFIG`, например `https://api.snafstudio.ru`.
-2. Добавить origin основного сайта и origin админки в `ALLOWED_ORIGINS`.
-3. Заполнить `GITHUB_ADMIN_ALLOWLIST` логином GitHub, которому разрешен вход в inbox.
-4. При желании заполнить `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`.
-
-## Важные замечания
-
-- Telegram полностью опционален. Если токенов нет, сервис не падает и продолжает сохранять lead.
-- GitHub PAT не сохраняется в базе.
-- `SESSION_SECRET` обязателен и должен быть длинным случайным значением.
-- `/api/health` показывает состояние загрузки `content.json`.
+- Telegram is optional. Missing Telegram env vars do not block startup.
+- GitHub PAT is never stored in SQLite.
+- `SESSION_SECRET` is required and should be long and random.
+- `GET /api/health` shows content loader state, including `lastError`.

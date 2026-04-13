@@ -88,8 +88,19 @@ function createStore(options) {
             "  internal_note = excluded.internal_note,",
             "  telegram_notified_at = excluded.telegram_notified_at"
         ].join("\n")),
-        listLeadsAll: db.prepare("SELECT * FROM leads ORDER BY datetime(updated_at) DESC"),
-        listLeadsByStatus: db.prepare("SELECT * FROM leads WHERE status = ? ORDER BY datetime(updated_at) DESC"),
+        listLeadSummariesAll: db.prepare([
+            "SELECT id, created_at, updated_at, status, source_page, visitor_name,",
+            "contact_type, contact_value, first_question, match_type",
+            "FROM leads",
+            "ORDER BY datetime(updated_at) DESC"
+        ].join("\n")),
+        listLeadSummariesByStatus: db.prepare([
+            "SELECT id, created_at, updated_at, status, source_page, visitor_name,",
+            "contact_type, contact_value, first_question, match_type",
+            "FROM leads",
+            "WHERE status = ?",
+            "ORDER BY datetime(updated_at) DESC"
+        ].join("\n")),
         leadCounts: db.prepare([
             "SELECT",
             "  COUNT(*) AS total_all,",
@@ -104,6 +115,7 @@ function createStore(options) {
     function createChatSession(meta) {
         const now = new Date().toISOString();
         const sessionId = crypto.randomUUID();
+
         upsertChatSession({
             sessionId: sessionId,
             sourcePage: meta.sourcePage,
@@ -149,7 +161,7 @@ function createStore(options) {
         if (!currentLead) {
             transcript.push(createSystemEntry(
                 "lead_created",
-                "Lead created automatically from the first chat message.",
+                "Лид автоматически создан по первому сообщению в чате.",
                 { source: "chat_first_message" },
                 input.now
             ));
@@ -158,20 +170,18 @@ function createStore(options) {
         transcript.push(createUserEntry(input.userMessage, input.now, "message"));
         transcript.push(createBotEntry(input.botReply, input.matchType, input.now));
 
-        const leadRecord = currentLead
-            ? cloneLeadRecord(currentLead)
-            : createEmptyLeadRecord(input.sessionId, input.now);
-
-        leadRecord.updated_at = input.now;
-        leadRecord.status = currentLead ? currentLead.status : "new";
-        leadRecord.source_page = firstNonEmpty(currentLead && currentLead.source_page, input.sourcePage);
-        leadRecord.referrer = firstNonEmpty(currentLead && currentLead.referrer, input.referrer);
-        leadRecord.user_agent = firstNonEmpty(currentLead && currentLead.user_agent, input.userAgent);
-        leadRecord.first_question = currentLead && currentLead.first_question
-            ? currentLead.first_question
-            : input.userMessage;
-        leadRecord.transcript = JSON.stringify(transcript);
-        leadRecord.match_type = input.matchType || (currentLead && currentLead.match_type) || "fallback";
+        const leadRecord = buildLeadRecord({
+            currentLead: currentLead,
+            sessionId: input.sessionId,
+            now: input.now,
+            sourcePage: input.sourcePage,
+            referrer: input.referrer,
+            userAgent: input.userAgent,
+            status: currentLead ? currentLead.status : "new",
+            firstQuestion: currentLead && currentLead.first_question ? currentLead.first_question : input.userMessage,
+            transcript: transcript,
+            matchType: input.matchType || (currentLead && currentLead.match_type) || "fallback"
+        });
 
         statements.upsertLead.run(leadRecord);
         return getLeadBySessionId(input.sessionId);
@@ -193,7 +203,7 @@ function createStore(options) {
         if (!currentLead) {
             transcript.push(createSystemEntry(
                 "lead_created",
-                "Lead created from the lead form.",
+                "Лид создан из формы контакта, потому что до этого не было заявки из чата.",
                 { source: "chat_lead_form" },
                 input.now
             ));
@@ -203,36 +213,38 @@ function createStore(options) {
             transcript.push(createUserEntry(input.question, input.now, "lead_question"));
         }
 
-        transcript.push(createSystemEntry(
-            "lead_submission",
-            "Lead details submitted.",
-            {
-                name: input.name || null,
-                contactType: input.contactType,
-                contactValue: input.contactValue,
-                question: input.question || null,
-                consent: input.consent
-            },
-            input.now
-        ));
+        if (shouldAppendLeadSubmission(currentLead, input)) {
+            transcript.push(createSystemEntry(
+                "lead_submission",
+                "Пользователь отправил контактные данные через форму.",
+                {
+                    name: input.name || null,
+                    contactType: input.contactType,
+                    contactValue: input.contactValue,
+                    question: input.question || null,
+                    consent: input.consent
+                },
+                input.now
+            ));
+        }
 
-        const leadRecord = currentLead
-            ? cloneLeadRecord(currentLead)
-            : createEmptyLeadRecord(input.sessionId, input.now);
-
-        leadRecord.updated_at = input.now;
-        leadRecord.status = currentLead ? currentLead.status : "new";
-        leadRecord.source_page = firstNonEmpty(currentLead && currentLead.source_page, input.sourcePage);
-        leadRecord.referrer = firstNonEmpty(currentLead && currentLead.referrer, input.referrer);
-        leadRecord.user_agent = firstNonEmpty(currentLead && currentLead.user_agent, input.userAgent);
-        leadRecord.visitor_name = lastNonEmpty(currentLead && currentLead.visitor_name, input.name);
-        leadRecord.contact_type = lastNonEmpty(currentLead && currentLead.contact_type, input.contactType);
-        leadRecord.contact_value = lastNonEmpty(currentLead && currentLead.contact_value, input.contactValue);
-        leadRecord.first_question = currentLead && currentLead.first_question
-            ? currentLead.first_question
-            : (input.question || null);
-        leadRecord.transcript = JSON.stringify(transcript);
-        leadRecord.match_type = (currentLead && currentLead.match_type) || input.matchType || "handoff";
+        const leadRecord = buildLeadRecord({
+            currentLead: currentLead,
+            sessionId: input.sessionId,
+            now: input.now,
+            sourcePage: input.sourcePage,
+            referrer: input.referrer,
+            userAgent: input.userAgent,
+            visitorName: lastNonEmpty(currentLead && currentLead.visitor_name, input.name),
+            contactType: lastNonEmpty(currentLead && currentLead.contact_type, input.contactType),
+            contactValue: lastNonEmpty(currentLead && currentLead.contact_value, input.contactValue),
+            status: currentLead ? currentLead.status : "new",
+            firstQuestion: currentLead && currentLead.first_question
+                ? currentLead.first_question
+                : toNullableText(input.question),
+            transcript: transcript,
+            matchType: (currentLead && currentLead.match_type) || input.matchType || "handoff"
+        });
 
         statements.upsertLead.run(leadRecord);
         return getLeadBySessionId(input.sessionId);
@@ -250,11 +262,11 @@ function createStore(options) {
 
     function listLeads(status) {
         const rows = !status || status === "all"
-            ? statements.listLeadsAll.all()
-            : statements.listLeadsByStatus.all(status);
+            ? statements.listLeadSummariesAll.all()
+            : statements.listLeadSummariesByStatus.all(status);
 
         return {
-            items: rows.map(mapLead),
+            items: rows.map(mapLeadSummary),
             counts: getLeadCounts()
         };
     }
@@ -322,24 +334,31 @@ function createStore(options) {
     };
 }
 
-function createEmptyLeadRecord(sessionId, now) {
+function buildLeadRecord(input) {
+    const currentLead = input.currentLead;
     return {
-        id: crypto.randomUUID(),
-        session_id: sessionId,
-        created_at: now,
-        updated_at: now,
-        status: "new",
-        source_page: null,
-        referrer: null,
-        user_agent: null,
-        visitor_name: null,
-        contact_type: null,
-        contact_value: null,
-        first_question: null,
-        transcript: "[]",
-        match_type: "fallback",
-        internal_note: "",
-        telegram_notified_at: null
+        id: currentLead ? currentLead.id : crypto.randomUUID(),
+        session_id: input.sessionId,
+        created_at: currentLead ? currentLead.created_at : input.now,
+        updated_at: input.now,
+        status: input.status || "new",
+        source_page: firstNonEmpty(currentLead && currentLead.source_page, input.sourcePage),
+        referrer: firstNonEmpty(currentLead && currentLead.referrer, input.referrer),
+        user_agent: firstNonEmpty(currentLead && currentLead.user_agent, input.userAgent),
+        visitor_name: input.visitorName !== undefined
+            ? toNullableText(input.visitorName)
+            : toNullableText(currentLead && currentLead.visitor_name),
+        contact_type: input.contactType !== undefined
+            ? toNullableText(input.contactType)
+            : toNullableText(currentLead && currentLead.contact_type),
+        contact_value: input.contactValue !== undefined
+            ? toNullableText(input.contactValue)
+            : toNullableText(currentLead && currentLead.contact_value),
+        first_question: toNullableText(input.firstQuestion),
+        transcript: JSON.stringify(input.transcript || []),
+        match_type: input.matchType || (currentLead && currentLead.match_type) || "fallback",
+        internal_note: currentLead ? currentLead.internal_note || "" : "",
+        telegram_notified_at: currentLead ? currentLead.telegram_notified_at : null
     };
 }
 
@@ -410,6 +429,26 @@ function shouldAppendLeadQuestion(currentLead, question) {
     return normalizeCompare(question) !== normalizeCompare(currentLead.first_question);
 }
 
+function shouldAppendLeadSubmission(currentLead, input) {
+    if (!currentLead) {
+        return true;
+    }
+
+    const lastSubmission = getLastLeadSubmission(currentLead);
+    if (lastSubmission) {
+        const payload = lastSubmission.payload || {};
+        return normalizeCompare(payload.name) !== normalizeCompare(input.name) ||
+            normalizeCompare(payload.contactType) !== normalizeCompare(input.contactType) ||
+            normalizeCompare(payload.contactValue) !== normalizeCompare(input.contactValue) ||
+            normalizeCompare(payload.question) !== normalizeCompare(input.question);
+    }
+
+    return normalizeCompare(currentLead.visitor_name) !== normalizeCompare(input.name) ||
+        normalizeCompare(currentLead.contact_type) !== normalizeCompare(input.contactType) ||
+        normalizeCompare(currentLead.contact_value) !== normalizeCompare(input.contactValue) ||
+        (input.question ? normalizeCompare(currentLead.first_question) !== normalizeCompare(input.question) : false);
+}
+
 function normalizeCompare(value) {
     return String(value || "").trim().toLowerCase();
 }
@@ -423,6 +462,18 @@ function parseTranscript(value) {
     }
 }
 
+function getLastLeadSubmission(currentLead) {
+    const transcript = parseTranscript(currentLead && currentLead.transcript);
+    for (let index = transcript.length - 1; index >= 0; index -= 1) {
+        const entry = transcript[index];
+        if (entry && entry.type === "lead_submission") {
+            return entry;
+        }
+    }
+
+    return null;
+}
+
 function mapChatSession(row) {
     return {
         id: row.id,
@@ -432,6 +483,21 @@ function mapChatSession(row) {
         referrer: row.referrer,
         userAgent: row.user_agent,
         lastMessageAt: row.last_message_at
+    };
+}
+
+function mapLeadSummary(row) {
+    return {
+        id: row.id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        status: row.status,
+        visitorName: row.visitor_name,
+        contactType: row.contact_type,
+        contactValue: row.contact_value,
+        firstQuestion: row.first_question,
+        sourcePage: row.source_page,
+        matchType: row.match_type
     };
 }
 

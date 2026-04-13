@@ -6,6 +6,7 @@ const {
     optionalString,
     requiredEnum,
     requiredSessionId,
+    optionalSessionId,
     requireTrue
 } = require("../utils/validation");
 const { asyncHandler } = require("../utils/http");
@@ -32,11 +33,19 @@ function createChatRouter(options) {
 
     router.post("/message", asyncHandler(async function (req, res) {
         const body = requireObject(req.body, "body");
-        const sessionId = requiredSessionId(body.sessionId);
         const message = requiredString("message", body.message, 4000);
         const sourcePage = optionalString("sourcePage", body.sourcePage, 1024);
         const referrer = optionalString("referrer", body.referrer, 2048);
         const userAgent = optionalString("userAgent", req.get("user-agent"), 2048);
+        let sessionId = optionalSessionId(body.sessionId);
+
+        if (!sessionId) {
+            sessionId = store.createChatSession({
+                sourcePage: sourcePage,
+                referrer: referrer,
+                userAgent: userAgent
+            }).id;
+        }
 
         const replyPayload = chatResponder.generateReply(message);
 
@@ -51,6 +60,7 @@ function createChatRouter(options) {
         });
 
         res.json({
+            sessionId: sessionId,
             reply: replyPayload.reply,
             matchType: replyPayload.matchType,
             nextStep: replyPayload.nextStep,

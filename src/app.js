@@ -7,6 +7,7 @@ const { createAdminRouter } = require("./routes/admin");
 const { createHealthRouter } = require("./routes/health");
 const { notFound, errorHandler } = require("./utils/http");
 const { HttpError } = require("./utils/errors");
+const { createRequestTimingMiddleware } = require("./middleware/request-timing");
 
 function createApp(options) {
     const app = express();
@@ -30,6 +31,7 @@ function createApp(options) {
     };
 
     app.set("trust proxy", 1);
+    app.use(createRequestTimingMiddleware());
     app.use(cors(corsOptions));
     app.options("*", cors(corsOptions));
     app.use(express.json({ limit: "256kb" }));

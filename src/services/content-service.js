@@ -1,9 +1,12 @@
+const { buildMatcherData } = require("./matcher-index");
+
 function createContentService(options) {
     const sourceUrl = options.sourceUrl;
     const refreshMs = Number(options.refreshMs || 300000);
     const logger = options.logger || console;
 
     let content = createEmptyContent();
+    let matcherData = buildMatcherData(content);
     let lastLoadedAt = null;
     let lastError = null;
     let refreshTimer = null;
@@ -23,6 +26,7 @@ function createContentService(options) {
 
             const rawContent = await response.json();
             content = normalizeContent(rawContent);
+            matcherData = buildMatcherData(content);
             lastLoadedAt = new Date().toISOString();
             lastError = null;
             return content;
@@ -61,6 +65,7 @@ function createContentService(options) {
         stop: stop,
         refresh: refresh,
         getContent: function () { return content; },
+        getMatcherData: function () { return matcherData; },
         getHealth: function () {
             return {
                 sourceUrl: sourceUrl,

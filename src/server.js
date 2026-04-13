@@ -36,7 +36,8 @@ async function main() {
         cookieSameSite: config.cookieSameSite
     });
     const githubAuthService = createGithubAuthService({
-        allowlist: config.githubAdminAllowlist
+        allowlist: config.githubAdminAllowlist,
+        cacheTtlMs: 10 * 60 * 1000
     });
     const requireAdminAuth = createRequireAdminAuth({
         adminSessionService: adminSessionService

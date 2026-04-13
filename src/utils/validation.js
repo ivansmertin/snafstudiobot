@@ -88,6 +88,14 @@ function requiredSessionId(value) {
     return sessionId;
 }
 
+function optionalSessionId(value) {
+    if (value === undefined || value === null || value === "") {
+        return null;
+    }
+
+    return requiredSessionId(value);
+}
+
 module.exports = {
     requireObject,
     requiredString,
@@ -96,5 +104,6 @@ module.exports = {
     requiredEnum,
     optionalEnum,
     requireTrue,
-    requiredSessionId
+    requiredSessionId,
+    optionalSessionId
 };
